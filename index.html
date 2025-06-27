@@ -44,6 +44,11 @@
             pointer-events: none;
             visibility: hidden;
         }
+        /* Custom styles for disabled buttons */
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -51,18 +56,38 @@
     <div class="container mx-auto p-4 max-w-4xl">
         <header class="text-center mb-6">
             <h1 class="text-3xl font-bold text-gray-900">Control de Inventario</h1>
-            <p class="text-gray-600 mt-1">Escanea un código de barras para empezar</p>
+            <p class="text-gray-600 mt-1">Escanea o ingresa un código de barras para empezar</p>
         </header>
 
-        <!-- Scanner Section -->
+        <!-- Scanner/Manual Input Section -->
         <main class="bg-white p-6 rounded-xl shadow-lg mb-6">
-            <div id="video-container">
-                <video id="video"></video>
-                <div id="scan-overlay"></div>
+            <!-- Video Scanner Section -->
+            <div id="scanner-section" class="flex flex-col items-center">
+                <div id="video-container" class="mb-4">
+                    <video id="video" class="rounded-lg"></video>
+                    <div id="scan-overlay"></div>
+                </div>
+                <div id="status-message" class="text-center mt-4 font-medium text-gray-700">Iniciando cámara...</div>
+                <button id="manual-input-mode-btn" class="mt-4 flex items-center justify-center bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg transition-colors shadow-md">
+                    <i data-lucide="edit" class="mr-2"></i> Ingresar Código Manualmente
+                </button>
             </div>
-            <div id="status-message" class="text-center mt-4 font-medium text-gray-700">Iniciando cámara...</div>
 
-            <!-- Controls Section -->
+            <!-- Manual Input Section (Initially Hidden) -->
+            <div id="manual-input-section" class="hidden flex flex-col items-center">
+                <div class="w-full max-w-md">
+                    <label for="manual-barcode-input" class="block text-sm font-medium text-gray-700 mb-2">Ingresa el Código de Barras</label>
+                    <input type="text" id="manual-barcode-input" placeholder="Ej: 7891234567890" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-3 text-lg">
+                </div>
+                <button id="process-manual-barcode-btn" class="mt-4 flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors shadow-md">
+                    <i data-lucide="check" class="mr-2"></i> Procesar Código
+                </button>
+                <button id="scan-mode-btn" class="mt-4 flex items-center justify-center bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg transition-colors shadow-md">
+                    <i data-lucide="camera" class="mr-2"></i> Volver a Escanear
+                </button>
+            </div>
+
+            <!-- Last Scanned Info & Controls -->
             <div class="mt-6">
                 <div id="last-scanned-info" class="text-center p-4 bg-gray-50 rounded-lg mb-4 hidden">
                     <p class="text-sm text-gray-500">Último escaneo:</p>
@@ -151,7 +176,8 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, onSnapshot, addDoc, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { BrowserMultiFormatReader, NotFoundException } from "https://unpkg.com/@zxing/library@0.21.0";
+        // Import all from ZXing to access named exports via the ZXing object
+        import * as ZXing from "https://unpkg.com/@zxing/library@0.21.0";
 
         // --- DOM Elements ---
         const videoElement = document.getElementById('video');
@@ -179,10 +205,19 @@
         const messageBoxContent = document.getElementById('message-box-content');
         const messageBoxOkBtn = document.getElementById('message-box-ok-btn');
 
+        // New UI Elements for Mode Switching
+        const scannerSection = document.getElementById('scanner-section');
+        const manualInputSection = document.getElementById('manual-input-section');
+        const manualInputModeBtn = document.getElementById('manual-input-mode-btn');
+        const processManualBarcodeBtn = document.getElementById('process-manual-barcode-btn');
+        const scanModeBtn = document.getElementById('scan-mode-btn');
+        const manualBarcodeInput = document.getElementById('manual-barcode-input');
+
         // --- State ---
         let lastScannedCode = null;
         let isScanningPaused = false;
-        const codeReader = new BrowserMultiFormatReader();
+        let currentStream = null; // To keep track of the camera stream
+        const codeReader = new ZXing.BrowserMultiFormatReader(); // Corrected instantiation
         
         // --- Firebase Setup ---
         let db, auth;
@@ -193,6 +228,9 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "your-api-key", authDomain: "your-auth-domain", projectId: "your-project-id" };
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
+        /**
+         * Initializes Firebase and authenticates the user.
+         */
         async function setupFirebase() {
             try {
                 const app = initializeApp(firebaseConfig);
@@ -208,21 +246,27 @@
 
                 userId = auth.currentUser.uid;
                 
-                // Define collection paths
+                // Define collection paths for user-specific data
                 const userDocPath = `/artifacts/${appId}/users/${userId}`;
                 productsCollection = collection(db, `${userDocPath}/products`);
-                transactionsCollection = collection(db, `${userDocPath}/transactions`);
+                // Create a 'logs' subcollection for transactions under the user's path
+                transactionsCollection = collection(db, `${userDocPath}/transactions/logs`);
 
-                console.log("Firebase initialized and user authenticated:", userId);
+                console.log("Firebase inicializado y usuario autenticado:", userId);
+                // Start listening for inventory changes once Firebase is ready
                 listenToInventoryChanges();
             } catch (error) {
-                console.error("Firebase initialization failed:", error);
+                console.error("Error al inicializar Firebase:", error);
                 statusMessage.textContent = "Error de conexión con la base de datos.";
                 statusMessage.classList.add("text-red-500");
             }
         }
 
-        // --- Toast Notification ---
+        /**
+         * Displays a toast notification.
+         * @param {string} message - The message to display.
+         * @param {boolean} [isError=false] - True if it's an error message, false otherwise.
+         */
         function showToast(message, isError = false) {
             toastMessage.textContent = message;
             toast.className = `fixed top-5 right-5 text-white py-2 px-4 rounded-lg shadow-lg transform transition-transform duration-300 ${isError ? 'bg-red-500' : 'bg-green-500'}`;
@@ -232,84 +276,193 @@
             }, 3000);
         }
 
-        // --- Generic Message Box ---
+        /**
+         * Displays a generic message box modal.
+         * @param {string} title - The title of the message box.
+         * @param {string} content - The content message.
+         */
         function showMessageBox(title, content) {
             messageBoxTitle.textContent = title;
             messageBoxContent.textContent = content;
             messageBoxModal.classList.remove('hidden');
         }
 
+        /**
+         * Hides the generic message box modal.
+         */
         function hideMessageBox() {
             messageBoxModal.classList.add('hidden');
         }
 
-        // --- Barcode Scanner Logic ---
+        /**
+         * Stops the current camera stream if any.
+         */
+        function stopCamera() {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+                currentStream = null;
+                console.log("Cámara detenida.");
+            }
+            codeReader.reset(); // Reset ZXing code reader
+        }
+
+        /**
+         * Starts the barcode scanner using the device's camera.
+         */
         async function startScan() {
+            stopCamera(); // Ensure any previous camera stream is stopped
+            scannerSection.classList.remove('hidden');
+            manualInputSection.classList.add('hidden');
+            statusMessage.textContent = "Iniciando cámara...";
+            statusMessage.classList.remove("text-red-500"); // Reset error styling
+
             try {
+                // Request camera access explicitly to catch permission errors early
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                videoElement.srcObject = stream;
+                currentStream = stream; // Store the stream to stop it later
+
                 const videoInputDevices = await codeReader.listVideoInputDevices();
                 if (videoInputDevices.length === 0) {
-                    throw new Error("No se encontró ninguna cámara disponible.");
+                    throw new Error("No se encontró ninguna cámara disponible en el dispositivo.");
                 }
-                const selectedDeviceId = videoInputDevices[0].deviceId;
+
+                // Prioritize the back camera if multiple devices exist
+                const rearCamera = videoInputDevices.find(device => device.label.toLowerCase().includes('back') || device.label.toLowerCase().includes('trasera'));
+                const selectedDeviceId = rearCamera ? rearCamera.deviceId : videoInputDevices[0].deviceId;
+                
                 statusMessage.textContent = "Apunte la cámara al código de barras";
 
                 codeReader.decodeFromVideoDevice(selectedDeviceId, 'video', (result, err) => {
                     if (result && !isScanningPaused) {
                         isScanningPaused = true;
-                        navigator.vibrate(200); // Vibrate on scan
+                        if ('vibrate' in navigator) { // Check if vibration API is supported
+                            navigator.vibrate(200); // Vibrate on successful scan
+                        }
                         lastScannedCode = result.getText();
                         scannedCodeElement.textContent = lastScannedCode;
                         handleBarcode(lastScannedCode);
                     }
-                    if (err && !(err instanceof NotFoundException)) {
-                        console.error('Decoding error:', err);
+                    // Handle specific ZXing errors more gracefully
+                    if (err && !(err instanceof ZXing.NotFoundException) && !(err instanceof ZXing.ChecksumException) && !(err instanceof ZXing.FormatException)) { // Corrected exception types
+                        console.error('Error de decodificación:', err);
+                        // showToast(`Error de escaneo: ${err.message}`, true); // Only show if it's a persistent error, not just 'not found'
                     }
                 });
+                console.log("Escáner de cámara iniciado.");
             } catch (err) {
                 console.error("Error al iniciar el escáner:", err);
-                statusMessage.textContent = `Error al iniciar la cámara: ${err.message}. Por favor, asegúrese de que la cámara esté disponible y que la aplicación tenga permisos para usarla en la configuración de su navegador.`;
-                statusMessage.classList.add("text-red-500");
-                // Stop any ongoing video stream if an error occurs
-                if (videoElement.srcObject) {
-                    videoElement.srcObject.getTracks().forEach(track => track.stop());
+                let errorMessage = "Error desconocido al iniciar la cámara.";
+                if (err.name === 'NotAllowedError') {
+                    errorMessage = "Permiso de cámara denegado. Por favor, permita el acceso a la cámara en la configuración de su navegador para esta aplicación.";
+                } else if (err.name === 'NotFoundError') {
+                    errorMessage = "No se encontró ninguna cámara. Asegúrese de que su dispositivo tenga una cámara y que esté funcionando.";
+                } else if (err.name === 'NotReadableError') {
+                    errorMessage = "La cámara está siendo utilizada por otra aplicación o no se pudo acceder. Intente cerrar otras aplicaciones o reiniciar su dispositivo.";
+                } else {
+                    errorMessage = `Error al iniciar la cámara: ${err.message}`;
                 }
+                statusMessage.textContent = errorMessage;
+                statusMessage.classList.add("text-red-500");
+                // Switch to manual input mode if camera fails
+                switchToManualInputMode();
             }
         }
 
-        // --- Data Handling ---
+        /**
+         * Switches the UI to manual barcode input mode.
+         */
+        function switchToManualInputMode() {
+            stopCamera(); // Stop camera if it was running
+            scannerSection.classList.add('hidden');
+            manualInputSection.classList.remove('hidden');
+            manualBarcodeInput.value = ''; // Clear previous input
+            manualBarcodeInput.focus(); // Focus on the input field
+            statusMessage.textContent = "Ingrese el código de barras manualmente.";
+            statusMessage.classList.remove("text-red-500");
+            lastScannedInfo.classList.add('hidden'); // Hide last scanned info
+            disableButtons(); // Disable stock buttons
+        }
+
+        /**
+         * Switches the UI back to camera scanning mode.
+         */
+        function switchToScanMode() {
+            startScan(); // Attempt to start the camera again
+            manualInputSection.classList.add('hidden');
+            scannerSection.classList.remove('hidden');
+        }
+
+        /**
+         * Handles the scanned or manually entered barcode.
+         * @param {string} code - The barcode string.
+         */
         async function handleBarcode(code) {
+            // Trim whitespace from the code, important for manual input
+            code = code.trim(); 
+            if (!code) {
+                showToast("Código de barras vacío. Intente de nuevo.", true);
+                isScanningPaused = false;
+                return;
+            }
+
             const productRef = doc(productsCollection, code);
             const productSnap = await getDoc(productRef);
 
-            lastScannedInfo.classList.remove('hidden');
+            lastScannedInfo.classList.remove('hidden'); // Show the info panel
 
             if (productSnap.exists()) {
                 const productData = productSnap.data();
                 productNameElement.textContent = productData.name;
                 currentStockElement.textContent = productData.stock;
                 enableButtons();
+                showToast(`Producto "${productData.name}" cargado.`);
             } else {
                 productNameElement.textContent = "Producto no encontrado";
                 currentStockElement.textContent = "--";
                 disableButtons();
                 showNewProductModal(code);
+                showToast("Producto no encontrado. Por favor, añada los detalles.", true);
             }
-            // Allow scanning again after a short delay
-            setTimeout(() => { isScanningPaused = false; }, 2000);
+            // Allow scanning again after a short delay, or if in manual mode, stay ready.
+            if (!manualInputSection.classList.contains('hidden')) { // If in manual mode, no need to pause/resume scan
+                isScanningPaused = false; 
+            } else {
+                setTimeout(() => { isScanningPaused = false; }, 2000); // For camera scanning
+            }
         }
         
+        /**
+         * Displays the modal for adding a new product.
+         * @param {string} code - The barcode for the new product.
+         */
         function showNewProductModal(code) {
             newProductCodeElement.textContent = code;
             newProductModal.classList.remove('hidden');
+            newProductNameInput.focus(); // Focus on the name input
         }
 
+        /**
+         * Hides the modal for adding a new product and resets input fields.
+         */
         function hideNewProductModal() {
             newProductModal.classList.add('hidden');
             newProductNameInput.value = '';
             newProductDescInput.value = '';
-            isScanningPaused = false; // Resume scanning
+            // If the camera was active, resume scanning; otherwise, remain in manual input mode.
+            if (scannerSection.classList.contains('hidden')) {
+                // Stay in manual input mode, clear input
+                manualBarcodeInput.value = '';
+                manualBarcodeInput.focus();
+            } else {
+                isScanningPaused = false; 
+            }
         }
 
+        /**
+         * Saves a new product to Firestore.
+         */
         async function saveNewProduct() {
             const code = lastScannedCode;
             const name = newProductNameInput.value.trim();
@@ -323,7 +476,7 @@
             const newProduct = {
                 name,
                 description,
-                stock: 0,
+                stock: 0, // New products start with 0 stock
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp()
             };
@@ -332,7 +485,7 @@
                 await setDoc(doc(productsCollection, code), newProduct);
                 showToast(`Producto "${name}" añadido correctamente.`);
                 hideNewProductModal();
-                // Re-handle the barcode to update the displayed product info
+                // Re-handle the barcode to update the displayed product info with the new item
                 handleBarcode(code); 
             } catch (error) {
                 console.error("Error al guardar el producto:", error);
@@ -340,16 +493,20 @@
             }
         }
         
+        /**
+         * Updates the stock of a product (ingress or egress).
+         * @param {string} type - The type of transaction ('ingress' or 'egress').
+         */
         async function updateStock(type) {
             const code = lastScannedCode;
             const quantity = parseInt(quantityInput.value, 10);
 
             if (!code || isNaN(quantity) || quantity <= 0) {
-                showToast("Datos inválidos para la operación.", true);
+                showToast("Datos inválidos para la operación. Asegúrese de que un producto esté seleccionado y la cantidad sea válida.", true);
                 return;
             }
 
-            disableButtons();
+            disableButtons(); // Disable buttons during transaction
 
             try {
                 const productRef = doc(productsCollection, code);
@@ -357,7 +514,7 @@
                 await runTransaction(db, async (transaction) => {
                     const productDoc = await transaction.get(productRef);
                     if (!productDoc.exists()) {
-                        throw new Error("¡El producto no existe!"); // Use Error object
+                        throw new Error("¡El producto no existe o fue eliminado!");
                     }
 
                     const currentStock = productDoc.data().stock;
@@ -367,7 +524,7 @@
                         newStock = currentStock + quantity;
                     } else { // egress
                         if (currentStock < quantity) {
-                            throw new Error("No hay suficiente stock para este egreso.");
+                            throw new Error("No hay suficiente stock para este egreso. Stock actual: " + currentStock);
                         }
                         newStock = currentStock - quantity;
                     }
@@ -387,28 +544,32 @@
                         stockAfter: newStock,
                         timestamp: serverTimestamp()
                     };
-                    const newTransactionRef = doc(collection(transactionsCollection, 'logs')); // Add a subcollection for logs
-                    transaction.set(newTransactionRef, transactionLog);
+                    // Use addDoc for new documents in the transactions log collection
+                    transaction.set(doc(transactionsCollection), transactionLog); 
                 });
                 
                 showToast(`Se ${type === 'ingress' ? 'añadieron' : 'restaron'} ${quantity} unidades.`);
-                // Fetch the updated stock directly from the DOM, as Firebase listener will update the table
+                // Update the displayed current stock after transaction
                 currentStockElement.textContent = (await getDoc(productRef)).data().stock;
-                quantityInput.value = 1;
+                quantityInput.value = 1; // Reset quantity to 1
                 
             } catch (error) {
                 console.error("Error en la transacción:", error);
                 showToast(error.message || "Error al actualizar el stock.", true);
             } finally {
-                enableButtons();
+                enableButtons(); // Re-enable buttons after transaction
             }
         }
 
         // --- UI Logic ---
+        /**
+         * Renders the inventory table based on the provided products array.
+         * @param {Array<Object>} products - An array of product objects.
+         */
         function renderInventory(products) {
             inventoryTableBody.innerHTML = ''; // Clear existing rows
             if (products.length === 0) {
-                inventoryTableBody.innerHTML = '<tr><td colspan="3" class="text-center p-4 text-gray-500">Aún no hay productos. ¡Escanea uno para empezar!</td></tr>';
+                inventoryTableBody.innerHTML = '<tr><td colspan="3" class="text-center p-4 text-gray-500">Aún no hay productos. ¡Escanea o ingresa uno para empezar!</td></tr>';
                 return;
             }
 
@@ -430,6 +591,9 @@
             });
         }
         
+        /**
+         * Sets up a real-time listener for changes in the products collection.
+         */
         function listenToInventoryChanges() {
             onSnapshot(productsCollection, (snapshot) => {
                 const products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -442,11 +606,17 @@
             });
         }
         
+        /**
+         * Enables the ingress and egress buttons.
+         */
         function enableButtons() {
             ingressBtn.disabled = false;
             egressBtn.disabled = false;
         }
 
+        /**
+         * Disables the ingress and egress buttons.
+         */
         function disableButtons() {
             ingressBtn.disabled = true;
             egressBtn.disabled = true;
@@ -459,13 +629,32 @@
         cancelAddProductBtn.addEventListener('click', hideNewProductModal);
         messageBoxOkBtn.addEventListener('click', hideMessageBox); // Close message box on OK
 
+        // Event listeners for mode switching
+        manualInputModeBtn.addEventListener('click', switchToManualInputMode);
+        scanModeBtn.addEventListener('click', switchToScanMode);
+        processManualBarcodeBtn.addEventListener('click', () => {
+            const manualCode = manualBarcodeInput.value;
+            if (manualCode) {
+                handleBarcode(manualCode);
+            } else {
+                showMessageBox("Entrada Vacía", "Por favor, ingrese un código de barras.");
+            }
+        });
+
+        // Allow pressing Enter in the manual input field to process
+        manualBarcodeInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                processManualBarcodeBtn.click();
+            }
+        });
+
         // --- Initialization ---
         document.addEventListener('DOMContentLoaded', async () => {
-            lucide.createIcons();
-            await setupFirebase();
-            // Only start scanning if Firebase is successfully authenticated and initialized
+            lucide.createIcons(); // Initialize Lucide icons
+            await setupFirebase(); // Setup Firebase first
+            // Only attempt to start scanning if Firebase is successfully authenticated and initialized
             if (auth.currentUser) {
-                startScan();
+                startScan(); // Try to start the camera initially
             }
         });
     </script>
