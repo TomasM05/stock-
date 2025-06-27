@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control de Inventario con Código de Barras</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: auto;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+        #video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        #scan-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            height: 40%;
+            border: 4px solid rgba(255, 0, 0, 0.7);
+            border-radius: 1rem;
+            box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+        }
+        .modal {
+            transition: opacity 0.25s ease;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 max-w-4xl">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-900">Control de Inventario</h1>
+            <p class="text-gray-600 mt-1">Escanea un código de barras para empezar</p>
+        </header>
+
+        <!-- Scanner Section -->
+        <main class="bg-white p-6 rounded-xl shadow-lg mb-6">
+            <div id="video-container">
+                <video id="video"></video>
+                <div id="scan-overlay"></div>
+            </div>
+            <div id="status-message" class="text-center mt-4 font-medium text-gray-700">Iniciando cámara...</div>
+
+            <!-- Controls Section -->
+            <div class="mt-6">
+                <div id="last-scanned-info" class="text-center p-4 bg-gray-50 rounded-lg mb-4 hidden">
+                    <p class="text-sm text-gray-500">Último escaneo:</p>
+                    <p id="scanned-code" class="font-mono text-lg font-semibold text-indigo-600"></p>
+                    <p id="product-name" class="text-xl font-bold"></p>
+                    <p class="text-gray-600">Stock Actual: <span id="current-stock" class="font-bold text-2xl">--</span></p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+                    <div class="md:col-span-1">
+                        <label for="quantity" class="block text-sm font-medium text-gray-700 text-center md:text-left">Cantidad</label>
+                        <input type="number" id="quantity" value="1" min="1" class="mt-1 block w-full text-center text-2xl font-bold rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                    </div>
+                    <div class="md:col-span-2 grid grid-cols-2 gap-4">
+                        <button id="ingress-btn" disabled class="flex items-center justify-center w-full bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md">
+                            <i data-lucide="arrow-down-circle" class="mr-2"></i> Registrar Ingreso
+                        </button>
+                        <button id="egress-btn" disabled class="flex items-center justify-center w-full bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white font-bold py-3 px-4 rounded-lg transition-colors shadow-md">
+                            <i data-lucide="arrow-up-circle" class="mr-2"></i> Registrar Egreso
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Inventory Table -->
+        <section class="bg-white p-6 rounded-xl shadow-lg">
+            <h2 class="text-2xl font-bold mb-4">Inventario Actual</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Producto</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Código de Barras</th>
+                            <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody id="inventory-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Rows will be inserted here by JavaScript -->
+                         <tr><td colspan="3" class="text-center p-4 text-gray-500">No hay productos en el inventario.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Add New Product Modal -->
+    <div id="new-product-modal" class="modal fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center p-4 z-50 opacity-0 pointer-events-none">
+        <div class="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
+            <h3 class="text-2xl font-bold mb-4">Añadir Nuevo Producto</h3>
+            <p class="mb-4">El código de barras <strong id="new-product-code" class="text-indigo-600"></strong> no se encontró. Por favor, añade los detalles del producto.</p>
+            <div class="space-y-4">
+                <div>
+                    <label for="new-product-name" class="block text-sm font-medium text-gray-700">Nombre del Producto</label>
+                    <input type="text" id="new-product-name" placeholder="Ej: Refresco Cola 600ml" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label for="new-product-desc" class="block text-sm font-medium text-gray-700">Descripción (Opcional)</label>
+                    <textarea id="new-product-desc" rows="2" placeholder="Ej: Paquete de 12 unidades" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"></textarea>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end space-x-4">
+                <button id="cancel-add-product" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancelar</button>
+                <button id="save-product-btn" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">Guardar Producto</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed top-5 right-5 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg transform translate-x-[120%] transition-transform duration-300">
+        <p id="toast-message"></p>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, onSnapshot, addDoc, serverTimestamp, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { BrowserMultiFormatReader, NotFoundException } from "https://unpkg.com/@zxing/library@0.21.0";
+
+        // --- DOM Elements ---
+        const videoElement = document.getElementById('video');
+        const statusMessage = document.getElementById('status-message');
+        const lastScannedInfo = document.getElementById('last-scanned-info');
+        const scannedCodeElement = document.getElementById('scanned-code');
+        const productNameElement = document.getElementById('product-name');
+        const currentStockElement = document.getElementById('current-stock');
+        const quantityInput = document.getElementById('quantity');
+        const ingressBtn = document.getElementById('ingress-btn');
+        const egressBtn = document.getElementById('egress-btn');
+        const inventoryTableBody = document.getElementById('inventory-table-body');
+        const newProductModal = document.getElementById('new-product-modal');
+        const newProductCodeElement = document.getElementById('new-product-code');
+        const newProductNameInput = document.getElementById('new-product-name');
+        const newProductDescInput = document.getElementById('new-product-desc');
+        const saveProductBtn = document.getElementById('save-product-btn');
+        const cancelAddProductBtn = document.getElementById('cancel-add-product');
+        const toast = document.getElementById('toast');
+        const toastMessage = document.getElementById('toast-message');
+
+        // --- State ---
+        let lastScannedCode = null;
+        let isScanningPaused = false;
+        const codeReader = new BrowserMultiFormatReader();
+        
+        // --- Firebase Setup ---
+        let db, auth;
+        let userId;
+        let productsCollection, transactionsCollection;
+
+        // Use pre-configured Firebase settings if available, otherwise use placeholders
+        const firebaseConfig = typeof _firebase_config !== 'undefined' ? JSON.parse(_firebase_config) : { apiKey: "your-api-key", authDomain: "your-auth-domain", projectId: "your-project-id" };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        async function setupFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // Authenticate the user
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                userId = auth.currentUser.uid;
+                
+                // Define collection paths
+                const userDocPath = /artifacts/${appId}/users/${userId};
+                productsCollection = collection(db, ${userDocPath}/products);
+                transactionsCollection = collection(db, ${userDocPath}/transactions);
+
+                console.log("Firebase initialized and user authenticated:", userId);
+                listenToInventoryChanges();
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                statusMessage.textContent = "Error de conexión con la base de datos.";
+                statusMessage.classList.add("text-red-500");
+            }
+        }
+
+        // --- Toast Notification ---
+        function showToast(message, isError = false) {
+            toastMessage.textContent = message;
+            toast.className = fixed top-5 right-5 text-white py-2 px-4 rounded-lg shadow-lg transform transition-transform duration-300 ${isError ? 'bg-red-500' : 'bg-green-500'};
+            toast.classList.remove('translate-x-[120%]');
+            setTimeout(() => {
+                toast.classList.add('translate-x-[120%]');
+            }, 3000);
+        }
+
+        // --- Barcode Scanner Logic ---
+        async function startScan() {
+            try {
+                const videoInputDevices = await codeReader.listVideoInputDevices();
+                if (videoInputDevices.length === 0) {
+                    throw new Error("No se encontró ninguna cámara.");
+                }
+                const selectedDeviceId = videoInputDevices[0].deviceId;
+                statusMessage.textContent = "Apunte la cámara al código de barras";
+
+                codeReader.decodeFromVideoDevice(selectedDeviceId, 'video', (result, err) => {
+                    if (result && !isScanningPaused) {
+                        isScanningPaused = true;
+                        navigator.vibrate(200);
+                        lastScannedCode = result.getText();
+                        scannedCodeElement.textContent = lastScannedCode;
+                        handleBarcode(lastScannedCode);
+                    }
+                    if (err && !(err instanceof NotFoundException)) {
+                        console.error('Decoding error:', err);
+                    }
+                });
+            } catch (err) {
+                console.error("Error al iniciar el escáner:", err);
+                statusMessage.textContent = Error: ${err.message};
+                statusMessage.classList.add("text-red-500");
+            }
+        }
+
+        // --- Data Handling ---
+        async function handleBarcode(code) {
+            const productRef = doc(productsCollection, code);
+            const productSnap = await getDoc(productRef);
+
+            lastScannedInfo.classList.remove('hidden');
+
+            if (productSnap.exists()) {
+                const productData = productSnap.data();
+                productNameElement.textContent = productData.name;
+                currentStockElement.textContent = productData.stock;
+                enableButtons();
+            } else {
+                productNameElement.textContent = "Producto no encontrado";
+                currentStockElement.textContent = "--";
+                disableButtons();
+                showNewProductModal(code);
+            }
+            // Allow scanning again after a short delay
+            setTimeout(() => { isScanningPaused = false; }, 2000);
+        }
+        
+        function showNewProductModal(code) {
+            newProductCodeElement.textContent = code;
+            newProductModal.classList.remove('opacity-0', 'pointer-events-none');
+        }
+
+        function hideNewProductModal() {
+            newProductModal.classList.add('opacity-0', 'pointer-events-none');
+            newProductNameInput.value = '';
+            newProductDescInput.value = '';
+            isScanningPaused = false; // Resume scanning
+        }
+
+        async function saveNewProduct() {
+            const code = lastScannedCode;
+            const name = newProductNameInput.value.trim();
+            const description = newProductDescInput.value.trim();
+
+            if (!name) {
+                alert("Por favor, introduce un nombre para el producto.");
+                return;
+            }
+
+            const newProduct = {
+                name,
+                description,
+                stock: 0,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp()
+            };
+            
+            try {
+                await setDoc(doc(productsCollection, code), newProduct);
+                showToast(Producto "${name}" añadido correctamente.);
+                hideNewProductModal();
+                handleBarcode(code);
+            } catch (error) {
+                console.error("Error al guardar el producto:", error);
+                showToast("Error al guardar el producto.", true);
+            }
+        }
+        
+        async function updateStock(type) {
+            const code = lastScannedCode;
+            const quantity = parseInt(quantityInput.value, 10);
+
+            if (!code || isNaN(quantity) || quantity <= 0) {
+                showToast("Datos inválidos para la operación.", true);
+                return;
+            }
+
+            disableButtons();
+
+            try {
+                const productRef = doc(productsCollection, code);
+                
+                await runTransaction(db, async (transaction) => {
+                    const productDoc = await transaction.get(productRef);
+                    if (!productDoc.exists()) {
+                        throw "¡El producto no existe!";
+                    }
+
+                    const currentStock = productDoc.data().stock;
+                    let newStock;
+
+                    if (type === 'ingress') {
+                        newStock = currentStock + quantity;
+                    } else { // egress
+                        if (currentStock < quantity) {
+                            throw new Error("No hay suficiente stock para este egreso.");
+                        }
+                        newStock = currentStock - quantity;
+                    }
+
+                    transaction.update(productRef, { 
+                        stock: newStock,
+                        updatedAt: serverTimestamp() 
+                    });
+                    
+                    // Add to transactions log
+                    const transactionLog = {
+                        productCode: code,
+                        productName: productDoc.data().name,
+                        type: type,
+                        quantity: quantity,
+                        stockBefore: currentStock,
+                        stockAfter: newStock,
+                        timestamp: serverTimestamp()
+                    };
+                    const newTransactionRef = doc(collection(transactionsCollection));
+                    transaction.set(newTransactionRef, transactionLog);
+                });
+                
+                showToast(Se ${type === 'ingress' ? 'añadieron' : 'restaron'} ${quantity} unidades.);
+                currentStockElement.textContent = (await getDoc(productRef)).data().stock;
+                quantityInput.value = 1;
+            
+            } catch (error) {
+                console.error("Error en la transacción:", error);
+                showToast(error.message || "Error al actualizar el stock.", true);
+            } finally {
+                enableButtons();
+            }
+        }
+
+        // --- UI Logic ---
+        function renderInventory(products) {
+            inventoryTableBody.innerHTML = ''; // Clear existing rows
+            if (products.length === 0) {
+                 inventoryTableBody.innerHTML = '<tr><td colspan="3" class="text-center p-4 text-gray-500">Aún no hay productos. ¡Escanea uno para empezar!</td></tr>';
+                 return;
+            }
+
+            products.forEach(product => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-medium text-gray-900">${product.name}</div>
+                        <div class="text-sm text-gray-500">${product.description || ''}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm text-gray-900 font-mono">${product.id}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-center">
+                        <span class="text-xl font-bold ${product.stock <= 5 ? 'text-red-500' : 'text-gray-900'}">${product.stock}</span>
+                    </td>
+                `;
+                inventoryTableBody.appendChild(row);
+            });
+        }
+        
+        function listenToInventoryChanges() {
+            onSnapshot(productsCollection, (snapshot) => {
+                const products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                // Sort products alphabetically by name
+                products.sort((a, b) => a.name.localeCompare(b.name));
+                renderInventory(products);
+            }, (error) => {
+                console.error("Error escuchando cambios en el inventario:", error);
+                showToast("Error de conexión con la lista de inventario.", true);
+            });
+        }
+        
+        function enableButtons() {
+            ingressBtn.disabled = false;
+            egressBtn.disabled = false;
+        }
+
+        function disableButtons() {
+            ingressBtn.disabled = true;
+            egressBtn.disabled = true;
+        }
+
+        // --- Event Listeners ---
+        ingressBtn.addEventListener('click', () => updateStock('ingress'));
+        egressBtn.addEventListener('click', () => updateStock('egress'));
+        saveProductBtn.addEventListener('click', saveNewProduct);
+        cancelAddProductBtn.addEventListener('click', hideNewProductModal);
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            lucide.createIcons();
+            await setupFirebase();
+            if (auth.currentUser) {
+                startScan();
+            }
+        });
+    </script>
+</body>
+</html>
